@@ -1,0 +1,20 @@
+{
+  "name": "@pipeworx/mcp-veterinary-fda",
+  "version": "0.1.0",
+  "description": "Veterinary FDA MCP — openFDA Animal & Veterinary adverse events, pet/animal",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "pipeworx", "veterinary-fda"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pipeworx-io/mcp-veterinary-fda.git"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
