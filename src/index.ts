@@ -627,6 +627,12 @@ function internalHostMetricsClass(error: string): string | undefined {
  *   food or veterinary drugs
  * - pet_services_near: nearby vets, emergency vets, dog parks, pet stores,
  *   and shelters via OpenStreetMap/Overpass
+ * - animal_drug_search / animal_drug_detail / animal_drug_monthly_updates:
+ *   FDA-APPROVED animal drugs from the Green Book (Animal Drugs @ FDA). This
+ *   is a SECOND upstream, unrelated to openFDA and needing no key — see the
+ *   Green Book section further down for its own traps. It completes the
+ *   question sequence the rest of the pack starts: what is approved for this
+ *   animal, what has it done to animals, and has it been recalled.
  *
  * Source: api.fda.gov/animalandveterinary (985,705 Dog / 148,091 Cat adverse
  * event reports as of 2026-09-04, updated as FDA receives them) and
@@ -730,6 +736,54 @@ const tools: McpToolExport['tools'] = [
         limit: { type: 'number', description: 'Max recalls to return (1-50, default 10).' },
       },
       required: ['product'],
+    },
+  },
+  {
+    name: 'animal_drug_search',
+    description:
+      'Search FDA-APPROVED animal drugs — the FDA Green Book (Animal Drugs @ FDA), the official list of approved new animal drug applications. Answers "what FDA-approved drugs contain carprofen", "what drugs are approved for dogs", "what is approved for osteoarthritis in dogs", "what animal drugs does Zoetis market", "which animal drugs have been withdrawn". This is APPROVAL status, not adverse events (see vet_adverse_events) and not recalls (see vet_product_recalls). Pass free text via "query", OR one or more of the structured filters — see the note on "query" for why they do not combine.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Free-text search across the Green Book, e.g. "carprofen", "Rimadyl", "flea". Upstream ignores free text whenever a structured filter is also sent, so when you combine them this tool resolves "query" into active_ingredient (then brand_name) and reports which it used in query_resolved_to. For a precise combined search, pass the structured fields directly instead.' },
+        active_ingredient: { type: 'string', description: 'Chemical active ingredient, e.g. "Carprofen", "Meloxicam", "Fluralaner".' },
+        species: { type: 'string', description: 'Species the drug is approved for, e.g. "Dogs", "Cats", "Horses", "Cattle". Upstream uses plurals.' },
+        sponsor: { type: 'string', description: 'Sponsor/manufacturer, e.g. "Zoetis", "Boehringer Ingelheim", "Merck".' },
+        brand_name: { type: 'string', description: 'Proprietary/brand name, e.g. "Rimadyl", "Metacam".' },
+        dose_form: { type: 'string', description: 'Dose form, e.g. "Caplet", "Injectable Solution", "Chewable Tablet".' },
+        route: { type: 'string', description: 'Route of administration, e.g. "Oral", "Intravenous", "Topical".' },
+        indication: { type: 'string', description: 'What the drug is approved to treat, e.g. "osteoarthritis", "postoperative pain", "heartworm".' },
+        application_number: { type: 'string', description: 'NADA/ANADA application number, e.g. "141053".' },
+        status: { type: 'string', description: 'Approval status: "Approved", "Voluntary Withdrawn", "Granted", "Revoked" (or the raw code A/W/G/R).' },
+        limit: { type: 'number', description: 'Rows per page (1-100, default 20).' },
+        page: { type: 'number', description: 'Page number, 1-based (default 1).' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'animal_drug_detail',
+    description:
+      'Full FDA Green Book detail for one approved animal drug application, by application_id (from animal_drug_search). Returns the sponsor, every marketed product under the application with its species, dose form, route, strength and approved dosage/indications, plus the FOI approval summaries — FDA\'s own plain-English statement of what each original approval and supplement was FOR, with a PDF link. Answers "what was Rimadyl approved for", "what does application 141053 cover", "show me the approval history of this animal drug".',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        application_id: { type: 'number', description: 'Green Book applicationId, e.g. 1024 (Rimadyl Caplets). Get it from animal_drug_search — this is NOT the NADA application number.' },
+      },
+      required: ['application_id'],
+    },
+  },
+  {
+    name: 'animal_drug_monthly_updates',
+    description:
+      'List the FDA Green Book monthly update publications — the monthly PDF index of what changed in the approved-animal-drug list (new approvals, withdrawals, sponsor/labelling changes). Answers "what animal drug approvals changed recently", "give me the latest Green Book update". Returns year, month and a direct PDF URL per issue.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        year: { type: 'number', description: 'Optional: only this publication year, e.g. 2026.' },
+        limit: { type: 'number', description: 'Max issues to return, newest first (1-120, default 12).' },
+      },
+      required: [],
     },
   },
   {
@@ -1039,6 +1093,33 @@ async function vetProductRecalls(args: Record<string, unknown>): Promise<unknown
 // and pack-to-pack imports aren't shared at publish time.
 
 const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
+
+// Overpass and Nominatim both refuse Cloudflare Worker egress (429, then 521)
+// while answering 200 from anywhere else, so they are relayed through the
+// egress proxy when the gateway injects one. Measured on the relay before
+// wiring, per the GLOBOCAN/#1070 rule in egress-proxy: 406 with no User-Agent,
+// 200 with one — so the hop works AND the UA is load-bearing through it.
+// Same wiring as mcps/overpass; duplicated rather than imported for the reason
+// given above (published packs are inlined standalone). Fleet #1246.
+let PROXY: { url: string; token: string } | null = null;
+
+async function relay(
+  target: string,
+  init: { method?: string; body?: string; contentType?: string },
+): Promise<Response | null> {
+  if (!PROXY) return null;
+  return pwFetch(PROXY.url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${PROXY.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: target,
+      method: init.method ?? 'GET',
+      ...(init.body !== undefined ? { body: init.body } : {}),
+      ...(init.contentType ? { contentType: init.contentType } : {}),
+      userAgent: OVERPASS_UA,
+    }),
+  });
+}
 const OVERPASS_UA = 'Pipeworx-VeterinaryFDA-MCP/0.1 (contact@mojibake.ai)';
 
 const KIND_TAGS: Record<string, string> = {
@@ -1051,7 +1132,7 @@ const KIND_TAGS: Record<string, string> = {
 
 async function geocodePlace(place: string): Promise<{ lat: number; lon: number; display: string }> {
   const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(place)}`;
-  const res = await pwFetch(url, { headers: { 'User-Agent': OVERPASS_UA, 'Accept-Language': 'en' } });
+  const res = (await relay(url, { method: 'GET' })) ?? (await pwFetch(url, { headers: { 'User-Agent': OVERPASS_UA, 'Accept-Language': 'en' } }));
   if (!res.ok) throw new Error(`Geocoding "${place}" failed (Nominatim HTTP ${res.status}).`);
   const rows = (await res.json()) as Array<{ lat: string; lon: string; display_name: string }>;
   if (!rows.length) throw new Error(`Could not geocode "${place}" — try a more specific place name.`);
@@ -1068,11 +1149,16 @@ interface OverpassElement {
 }
 
 async function overpassPost(qql: string): Promise<{ elements?: OverpassElement[] }> {
-  const res = await pwFetch(OVERPASS_ENDPOINT, {
+  const body = `data=${encodeURIComponent(qql)}`;
+  const res = (await relay(OVERPASS_ENDPOINT, {
+    method: 'POST',
+    body,
+    contentType: 'application/x-www-form-urlencoded',
+  })) ?? (await pwFetch(OVERPASS_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json', 'User-Agent': OVERPASS_UA },
-    body: `data=${encodeURIComponent(qql)}`,
-  });
+    body,
+  }));
   if (res.status === 429) throw new Error('Overpass: rate-limited (HTTP 429). Try again shortly.');
   if (res.status === 504) throw new Error('Overpass: query timed out (HTTP 504). Try a smaller radius.');
   if (!res.ok) throw await httpError(res, 'OpenStreetMap Overpass');
@@ -1139,9 +1225,354 @@ out center ${limit};`;
   };
 }
 
+/* ── FDA Green Book (Animal Drugs @ FDA) ──────────────────────────── */
+
+// A DIFFERENT upstream from the openFDA calls above: the Green Book SPA's own
+// backing API. Public, keyless, JSON; no api.data.gov key applies to it.
+const GREENBOOK = 'https://animaldrugsatfda.fda.gov/adafda/app/search/public';
+
+// Document downloads. All three verified 200 application/pdf 2026-09-05
+// (downloadFoi/586 = 113KB, downloadLabeling/403 = 526KB,
+// downloadMonthlyUpdate/2202 = 159KB). The monthly-update path is NOT under
+// /document/ like the other two — it hangs off /monthlyUpdates/ instead.
+const FOI_PDF = `${GREENBOOK}/document/downloadFoi`;
+const LABELING_PDF = `${GREENBOOK}/document/downloadLabeling`;
+const MONTHLY_PDF = `${GREENBOOK}/monthlyUpdates/downloadMonthlyUpdate`;
+
+type GreenbookPage = {
+  content?: unknown[];
+  totalElements?: number;
+  numberOfElements?: number;
+};
+
+async function greenbookFetch(path: string, body?: unknown): Promise<unknown> {
+  const init: RequestInit = body === undefined
+    ? {}
+    : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  const res = await pwFetch(`${GREENBOOK}${path}`, init);
+  if (!res.ok) {
+    const detail = await httpErrorMessage(res, 'FDA Green Book');
+    if (res.status >= 500) throw new Error(`upstream_down: ${detail}`);
+    if (res.status === 429) throw new Error(`upstream_throttled: ${detail}`);
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+// The /codes lookups are tiny and effectively static, so they are memoised per
+// isolate. A failed fetch clears the memo (so the next call retries) and falls
+// back to the table below — a status must never surface as a bare letter, and
+// degrading the whole tool because a 4-row lookup blipped would be worse.
+const STATUS_FALLBACK: Record<string, string> = {
+  A: 'Approved', W: 'Voluntary Withdrawn', G: 'Granted', R: 'Revoked',
+};
+const TYPE_FALLBACK: Record<string, string> = {
+  N: 'NADA (New Animal Drug Application)',
+  A: 'ANADA (Abbreviated New Animal Drug Application)',
+  C: 'CNADA (Conditional New Animal Drug Application)',
+  E: 'EUA (Emergency Use Authorization)',
+};
+
+let codeCache: Map<string, Promise<Record<string, string>>> | undefined;
+
+async function codeMap(name: 'application_status' | 'application_type'): Promise<Record<string, string>> {
+  if (!codeCache) codeCache = new Map();
+  const hit = codeCache.get(name);
+  if (hit) return hit;
+  const pending = (async () => {
+    const rows = (await greenbookFetch(`/codes/${name}`)) as Array<Record<string, unknown>>;
+    const out: Record<string, string> = {};
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const code = typeof row.code === 'string' ? row.code : null;
+      const value = typeof row.value === 'string' ? row.value : null;
+      if (code && value) out[code] = value;
+    }
+    if (!Object.keys(out).length) throw new Error('empty code list');
+    return out;
+  })().catch((err) => {
+    codeCache?.delete(name);
+    console.warn(`veterinary-fda: /codes/${name} lookup failed, using fallback table: ${String(err)}`);
+    return name === 'application_status' ? STATUS_FALLBACK : TYPE_FALLBACK;
+  });
+  codeCache.set(name, pending);
+  return pending;
+}
+
+/** publishDate / voluntaryWithdrawalDate are epoch MILLISECONDS, not seconds. */
+function epochMsToDate(value: unknown): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+
+/** proprietaryName can carry embedded newlines: "Carprofen Caplets\nNovox® Caplets". */
+function splitNames(value: unknown): string[] {
+  if (typeof value !== 'string') return [];
+  return value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
+async function projectApplicationRow(raw: unknown) {
+  const r = raw as Record<string, unknown>;
+  const [statuses, types] = await Promise.all([codeMap('application_status'), codeMap('application_type')]);
+  const statusCode = typeof r.applicationStatusCode === 'string' ? r.applicationStatusCode : null;
+  const typeCode = typeof r.applicationType === 'string' ? r.applicationType : null;
+  const names = splitNames(r.proprietaryName);
+  return {
+    application_id: r.applicationId ?? null,
+    application_number: r.applicationNumber ?? null,
+    // applicationStatusValue is ALWAYS null in list rows — decoded here, never
+    // passed through raw, or every result reads as status-unknown.
+    status: statusCode ? statuses[statusCode] ?? `Unknown code ${statusCode}` : null,
+    status_code: statusCode,
+    application_type: typeCode ? types[typeCode] ?? `Unknown code ${typeCode}` : null,
+    application_type_code: typeCode,
+    proprietary_name: names[0] ?? null,
+    // A single row can market several names; the extra ones are only visible
+    // if you split, so both shapes are returned.
+    proprietary_names: names,
+    active_ingredient: r.activeIngredientName ?? null,
+    sponsor: r.sponsorName ?? null,
+    publish_date: epochMsToDate(r.publishDate),
+    voluntary_withdrawal_date: epochMsToDate(r.voluntaryWithdrawalDate),
+  };
+}
+
+const ADVANCED_FIELDS: Array<[string, string]> = [
+  ['active_ingredient', 'activeIngredientName'],
+  ['species', 'speciesName'],
+  ['sponsor', 'sponsorName'],
+  ['brand_name', 'proprietaryName'],
+  ['dose_form', 'doseFormName'],
+  ['route', 'routeName'],
+  ['indication', 'indication'],
+  ['application_number', 'applicationNumber'],
+];
+
+function statusCodeFor(value: string): string {
+  const v = value.trim();
+  if (/^[AWGR]$/i.test(v)) return v.toUpperCase();
+  const found = Object.entries(STATUS_FALLBACK).find(([, label]) => label.toLowerCase() === v.toLowerCase());
+  if (found) return found[0];
+  if (/^withdraw/i.test(v)) return 'W';
+  throw new Error(`Unrecognised status "${value}". Use Approved, Voluntary Withdrawn, Granted or Revoked.`);
+}
+
+async function greenbookSearch(body: Record<string, unknown>, advanced: boolean): Promise<GreenbookPage> {
+  const path = advanced ? '/advancedSearch' : '/basicSearch';
+  return (await greenbookFetch(path, body)) as GreenbookPage;
+}
+
+async function animalDrugSearch(args: Record<string, unknown>) {
+  const limit = clampInt(args.limit, 1, 100, 20);
+  const page = clampInt(args.page, 1, 10_000, 1);
+  const query = typeof args.query === 'string' ? args.query.trim() : '';
+
+  const filters: Record<string, unknown> = {};
+  for (const [arg, field] of ADVANCED_FIELDS) {
+    const v = args[arg];
+    if (typeof v === 'string' && v.trim()) filters[field] = v.trim();
+    else if (typeof v === 'number') filters[field] = String(v);
+  }
+  if (typeof args.status === 'string' && args.status.trim()) {
+    filters.applicationStatusCode = statusCodeFor(args.status);
+  }
+
+  const hasFilters = Object.keys(filters).length > 0;
+  if (!query && !hasFilters) {
+    throw new Error('Pass "query" (free text) or at least one filter (active_ingredient, species, sponsor, brand_name, dose_form, route, indication, application_number, status).');
+  }
+
+  const paging = {
+    isExact: false,
+    sortField: 'applicationNumber',
+    sortDirection: 'false',
+    pageSize: limit,
+    pageNumber: page,
+  };
+
+  let queryResolvedTo: string | null = null;
+  let result: GreenbookPage;
+
+  if (query && !hasFilters) {
+    result = await greenbookSearch({ basicSearchTerm: query, ...paging }, false);
+  } else if (!query) {
+    result = await greenbookSearch({ basicSearchTerm: null, ...filters, ...paging }, true);
+  } else {
+    // TRAP: /advancedSearch silently DROPS basicSearchTerm. Measured 2026-09-05:
+    // {basicSearchTerm:"carprofen", speciesName:"Cats"} returned 338 rows — the
+    // whole Cats set, led by Pentobarbital Sodium — not the carprofen∩cats
+    // intersection. It is a 200 with confidently wrong rows, so free text is
+    // resolved into a real field instead of being passed through.
+    result = await greenbookSearch({ basicSearchTerm: null, activeIngredientName: query, ...filters, ...paging }, true);
+    queryResolvedTo = 'active_ingredient';
+    if (!(result.totalElements ?? 0)) {
+      result = await greenbookSearch({ basicSearchTerm: null, proprietaryName: query, ...filters, ...paging }, true);
+      queryResolvedTo = 'brand_name';
+    }
+  }
+
+  const rows = Array.isArray(result.content) ? result.content : [];
+  const total = result.totalElements ?? 0;
+  const drugs = await Promise.all(rows.map(projectApplicationRow));
+
+  return {
+    source: 'FDA Green Book (Animal Drugs @ FDA) — approved new animal drug applications',
+    source_url: 'https://animaldrugsatfda.fda.gov/adafda/views/#/search',
+    search: query && !hasFilters ? { mode: 'free_text', query } : { mode: 'filtered', query: query || null, query_resolved_to: queryResolvedTo, filters },
+    total_matching: total,
+    // Upstream's own totalPages is ALWAYS 1 regardless of the real count
+    // (694 dog rows at pageSize 2 still reports totalPages 1), so it is
+    // recomputed here — trusting it silently truncates every large result.
+    page,
+    page_size: limit,
+    total_pages: Math.max(1, Math.ceil(total / limit)),
+    has_more: page * limit < total,
+    returned: drugs.length,
+    drugs,
+    ...(drugs.length === 0
+      ? { note: 'No approved animal drug applications matched. The Green Book covers FDA-approved animal drugs only — an unapproved, compounded, or human-label drug used off-label in animals will not appear here.' }
+      : {}),
+    ...(queryResolvedTo
+      ? { note: `Free text and structured filters cannot be combined upstream, so "query" was searched as ${queryResolvedTo}. Pass the structured field directly to control this.` }
+      : {}),
+  };
+}
+
+async function animalDrugDetail(args: Record<string, unknown>) {
+  const id = clampInt(args.application_id, 1, Number.MAX_SAFE_INTEGER, 0);
+  if (!id) throw new Error('application_id is required — the numeric Green Book applicationId from animal_drug_search.');
+
+  // retrievePreviewBean carries the rich content but returns its `application`
+  // block almost entirely null (applicationNumber 0, type/status null), so the
+  // identity fields come from /preview/{id} instead. Neither alone is enough.
+  //
+  // /preview is also the id check, and has to run FIRST rather than in parallel:
+  // retrievePreviewBean answers an unknown id with a 500 and an HTML Weblogic
+  // error page, which would otherwise surface as `upstream_down` — reporting
+  // FDA as down when the real fault is a bad argument. /preview answers the
+  // same id with a clean 200 and applicationId null.
+  const head = ((await greenbookFetch(`/preview/${id}`)) ?? {}) as Record<string, unknown>;
+  if (head.applicationId === null || head.applicationId === undefined) {
+    throw new Error(`No FDA Green Book application with application_id ${id}. That argument is the Green Book applicationId from animal_drug_search (e.g. 1024 for Rimadyl Caplets), NOT the NADA/ANADA application number (e.g. 141053).`);
+  }
+
+  const detail = await greenbookFetch(`/retrievePreviewBean/${id}`);
+  const d = (detail ?? {}) as Record<string, unknown>;
+  const documents = (d.documents ?? {}) as Record<string, unknown>;
+  const [statuses, types] = await Promise.all([codeMap('application_status'), codeMap('application_type')]);
+
+  const statusCode = typeof head.applicationStatusCode === 'string' ? head.applicationStatusCode : null;
+  const typeCode = typeof head.applicationType === 'string' ? head.applicationType : null;
+
+  const foi = (Array.isArray(documents.foi) ? documents.foi : []) as Array<Record<string, unknown>>;
+  const labeling = (Array.isArray(documents.labeling) ? documents.labeling : []) as Array<Record<string, unknown>>;
+  const products = (Array.isArray(d.proprietaryPreviewBean) ? d.proprietaryPreviewBean : []) as Array<Record<string, unknown>>;
+
+  return {
+    source: 'FDA Green Book (Animal Drugs @ FDA)',
+    source_url: `https://animaldrugsatfda.fda.gov/adafda/views/#/preview/${id}`,
+    application_id: id,
+    application_number: head.applicationNumber ?? null,
+    application_type: typeCode ? types[typeCode] ?? `Unknown code ${typeCode}` : null,
+    status: statusCode ? statuses[statusCode] ?? `Unknown code ${statusCode}` : null,
+    products: products.map((p) => ({
+      proprietary_names: splitNames(p.proprietaryName),
+      dose_form: p.doseFormName ?? null,
+      marketing_status: p.statusDescription ?? null,
+      routes: Array.isArray(p.routes) ? p.routes : [],
+      // `species` is an object keyed "Dogs:43" -> use class; the label after
+      // the colon is the use class, not a second species.
+      species: p.species && typeof p.species === 'object' ? Object.keys(p.species as object).map((k) => k.split(':')[0]) : [],
+      species_use_classes: p.species && typeof p.species === 'object' ? (p.species as Record<string, string>) : {},
+      specifications: p.specifications ?? null,
+      dosage_and_indications: (Array.isArray(p.ailHeader) ? p.ailHeader : []).map((h) => {
+        const hh = h as Record<string, unknown>;
+        return {
+          species: hh.ailHeader ?? null,
+          entries: (Array.isArray(hh.ails) ? hh.ails : []).map((a) => {
+            const aa = a as Record<string, unknown>;
+            return { dosage: aa.dosageAmount ?? null, indication: aa.indication ?? aa.indications ?? null };
+          }),
+        };
+      }),
+    })),
+    // The reason this pack has a detail tool at all: FDA's own plain-English
+    // statement of what each approval and supplement was FOR.
+    approval_summaries: foi.map((f) => ({
+      approval_type: f.approvalType ?? null,
+      approval_date: f.approvalDate ?? null,
+      summary: f.summary ?? null,
+      pdf_url: f.foiId ? `${FOI_PDF}/${f.foiId}` : null,
+    })),
+    labeling_documents: labeling.map((l) => ({
+      component: l.labelingComponent ?? null,
+      proprietary_name: l.proprietaryName ?? null,
+      pdf_url: l.labelingId ? `${LABELING_PDF}/${l.labelingId}` : null,
+    })),
+    ...(products.length === 0 && foi.length === 0
+      ? { note: `No detail rows for application_id ${id}. Confirm the id came from animal_drug_search — it is the Green Book applicationId, not the NADA/ANADA application number.` }
+      : {}),
+  };
+}
+
+async function animalDrugMonthlyUpdates(args: Record<string, unknown>) {
+  const limit = clampInt(args.limit, 1, 120, 12);
+  const wantYear = typeof args.year === 'number' ? args.year : undefined;
+
+  const years = (await greenbookFetch('/monthlyUpdates')) as Array<Record<string, unknown>>;
+  const issues: Array<{ year: number; month: number; file_name: string | null; pdf_url: string | null }> = [];
+
+  for (const y of Array.isArray(years) ? years : []) {
+    const year = typeof y.year === 'number' ? y.year : null;
+    if (year === null) continue;
+    if (wantYear !== undefined && year !== wantYear) continue;
+    const list = (Array.isArray(y.monthlyUpdatesDTO) ? y.monthlyUpdatesDTO : []) as Array<Record<string, unknown>>;
+    for (const m of list) {
+      if (m.visibleFlag === 'N') continue;
+      const gmuId = typeof m.greenbookMonthlyUpdatesId === 'number' ? m.greenbookMonthlyUpdatesId : null;
+      issues.push({
+        year: typeof m.gmuYear === 'number' ? m.gmuYear : year,
+        month: typeof m.gmuMonth === 'number' ? m.gmuMonth : 0,
+        file_name: typeof m.gmuFileName === 'string' ? m.gmuFileName : null,
+        pdf_url: gmuId ? `${MONTHLY_PDF}/${gmuId}` : null,
+      });
+    }
+  }
+
+  issues.sort((a, b) => (b.year - a.year) || (b.month - a.month));
+  const page = issues.slice(0, limit);
+
+  return {
+    source: 'FDA Green Book monthly updates (Animal Drugs @ FDA)',
+    source_url: 'https://animaldrugsatfda.fda.gov/adafda/views/#/monthlyUpdates',
+    ...(wantYear !== undefined ? { year: wantYear } : {}),
+    total_issues: issues.length,
+    returned: page.length,
+    issues: page,
+    ...(page.length === 0
+      ? { note: wantYear !== undefined ? `No Green Book monthly updates published for ${wantYear}.` : 'No Green Book monthly updates returned upstream.' }
+      : { note: 'Each issue is a PDF listing that month\'s changes to the approved-animal-drug list. pdf_url is a direct download.' }),
+  };
+}
+
 /* ── callTool dispatcher ──────────────────────────────────────────── */
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  // Gateway-injected relay credentials, captured then DELETED so they can never
+  // be echoed back to a caller or read as a query argument.
+  PROXY =
+    typeof args._proxyUrl === 'string' && typeof args._proxyToken === 'string'
+      ? { url: args._proxyUrl, token: args._proxyToken }
+      : null;
+  delete args._proxyUrl;
+  delete args._proxyToken;
+
   switch (name) {
     case 'vet_adverse_events':
       return vetAdverseEvents(args);
@@ -1151,6 +1582,12 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
       return vetProductRecalls(args);
     case 'pet_services_near':
       return petServicesNear(args);
+    case 'animal_drug_search':
+      return animalDrugSearch(args);
+    case 'animal_drug_detail':
+      return animalDrugDetail(args);
+    case 'animal_drug_monthly_updates':
+      return animalDrugMonthlyUpdates(args);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

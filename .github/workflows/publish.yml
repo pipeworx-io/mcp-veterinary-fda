@@ -136,7 +136,12 @@ jobs:
           out=$(npm publish --access public 2>&1) && rc=0 || rc=$?
           echo "$out"
           if [ $rc -ne 0 ] && echo "$out" | grep -q 'ENEEDAUTH'; then
-            echo "::error::npm returned ENEEDAUTH. This almost certainly means no trusted publisher is configured for this package yet, NOT that a token is missing — this workflow publishes over OIDC and deliberately has no credential. Fix: from pipeworx-core, npm login (interactive, 2FA) then ./scripts/npm-trust-bulk.sh --only ${{ github.event.repository.name }}. See docs/npm-trusted-publishing.md."
+            # npm-trust-bulk.sh --only matches pack SLUGS, and the repo name is
+            # mcp-<slug> — strip the prefix or the suggested command matches
+            # nothing (seen live: "--only mcp-csv" → "matched no outstanding
+            # published pack").
+            repo='${{ github.event.repository.name }}'
+            echo "::error::npm returned ENEEDAUTH. This almost certainly means no trusted publisher is configured for this package yet, NOT that a token is missing — this workflow publishes over OIDC and deliberately has no credential. Fix: from pipeworx-core, npm login (interactive, 2FA) then ./scripts/npm-trust-bulk.sh --only ${repo#mcp-}. See docs/npm-trusted-publishing.md."
           fi
           exit $rc
 
