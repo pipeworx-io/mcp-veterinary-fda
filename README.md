@@ -2,7 +2,7 @@
 
 Approved animal drugs, side-effect reports, product recalls, and nearby pet services for the animal/veterinary side of the world — dogs, cats, horses, cattle. Three sources: the **FDA Green Book** (Animal Drugs @ FDA — the official list of approved new animal drug applications, keyless), openFDA's Center for Veterinary Medicine adverse-event database (985,705 Dog / 148,091 Cat reports as of 2026-09-04, keyless) and OpenStreetMap (vets, dog parks, pet stores, shelters). No pack in the MCP ecosystem serves the animal adverse-event data before this one — `openfda` never touches it, and `openfda`'s drug endpoints are human-drug only, so the Green Book side is likewise unserved.
 
-Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1576+ live data sources.
+Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1669+ live data sources.
 
 Together these answer one question sequence end to end: **what is approved for this animal** (Green Book) → **what has it done to animals** (adverse events) → **has it been recalled** (enforcement reports).
 
@@ -119,7 +119,7 @@ directly, instead of just this one's:
 }
 ```
 
-Both URLs reach the same gateway and the same 1576+ data sources. The
+Both URLs reach the same gateway and the same 1669+ data sources. The
 only difference is which pack's tools are listed **directly**; `ask_pipeworx`
 reaches all of them from either one.
 
