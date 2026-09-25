@@ -1,6 +1,6 @@
 {
   "name": "@pipeworx/mcp-veterinary-fda",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Veterinary FDA MCP — openFDA Animal & Veterinary adverse events, pet/animal",
   "type": "module",
   "main": "src/index.ts",
@@ -24,5 +24,9 @@
   "devDependencies": {
     "typescript": "^5.9.3",
     "@cloudflare/workers-types": "^4.20260405.1"
+  },
+  "pipeworx": {
+    "sourceHash": "v1-2d926f157839200d171eddac34fe6feb5a24205d1cdfdab05af5beab6cebecdf",
+    "sourceCommit": "b0fb3c31386cf0256dcf1e2f1b3440435a87ec35"
   }
 }

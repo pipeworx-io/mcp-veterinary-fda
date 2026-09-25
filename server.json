@@ -3,7 +3,7 @@
   "name": "io.github.pipeworx-io/veterinary-fda",
   "title": "Veterinary Fda",
   "description": "Veterinary FDA MCP — openFDA Animal & Veterinary adverse events, pet/animal",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "websiteUrl": "https://pipeworx.io/packs/veterinary-fda",
   "repository": {
     "url": "https://github.com/pipeworx-io/mcp-veterinary-fda",
