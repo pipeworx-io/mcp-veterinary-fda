@@ -1,12 +1,20 @@
 {
   "name": "@pipeworx/mcp-veterinary-fda",
-  "version": "0.1.2",
-  "description": "Veterinary FDA MCP — openFDA Animal & Veterinary adverse events, pet/animal",
+  "version": "0.2.0",
+  "description": "Veterinary FDA MCP — openFDA Animal & Veterinary adverse events, pet/animal food & drug recalls (openFDA Enforcement Reports), and pet services nearby (OpenStreetMap via Overpass).",
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./tools.json": "./tools.json",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "mcp-veterinary-fda": "bin/cli.js"
+  },
+  "files": ["bin/", "lib/", "tools.json", "server.json"],
+  "engines": {
+    "node": ">=18"
   },
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "pipeworx", "veterinary-fda"],
   "license": "MIT",
@@ -14,19 +22,12 @@
     "type": "git",
     "url": "git+https://github.com/pipeworx-io/mcp-veterinary-fda.git"
   },
-  "scripts": {
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "tsx": "^4.19.0"
-  },
-  "devDependencies": {
-    "typescript": "^5.9.3",
-    "@cloudflare/workers-types": "^4.20260405.1"
-  },
+  "mcpName": "io.github.pipeworx-io/veterinary-fda",
   "pipeworx": {
-    "sourceHash": "v1-b4c0aa77981cedbb96beace1a163d5a3dab83d6ed3de08213c5af3b5f6637f3d",
-    "sourceCommit": "2cb50b368da3267446f2b6f6a3ddbd3d0eed3d73"
+    "mode": "gateway",
+    "slug": "veterinary-fda",
+    "gatewaySlug": "veterinary-fda",
+    "sourceHash": "v1-4a9edad55133f95a05343ebd5e6d7b15be3b49b88f18c3b5ff7e8ae5983b1c6f",
+    "sourceCommit": "98853f34516646cb7c4c1460f09249b262c0269e"
   }
 }
